@@ -16,17 +16,34 @@ def get_db_connection(host, username, password, database):
         messagebox.showerror("خطا", f"اتصال به بانک اطلاعاتی ممکن نیست: {err}")
         return None
 
+# تابع برای پیدا کردن پیشوند جداول
+def get_table_prefix(connection):
+    cursor = connection.cursor()
+    query = "SELECT option_value FROM wp_options WHERE option_name = 'table_prefix'"
+    try:
+        cursor.execute(query)
+        prefix = cursor.fetchone()
+        if prefix:
+            return prefix[0]
+        else:
+            return 'wp_'  # پیشوند پیش‌فرض در صورت عدم وجود
+    except mysql.connector.Error as err:
+        messagebox.showerror("خطا", f"خطا در یافتن پیشوند جداول: {err}")
+        return 'wp_'  # پیشوند پیش‌فرض در صورت بروز خطا
+    finally:
+        cursor.close()
+
 # تابع برای نمایش لیست کاربران و دسترسی‌ها
-def show_users(connection, tree):
+def show_users(connection, tree, table_prefix):
     if connection is None:
         messagebox.showerror("خطا", "اتصال به بانک اطلاعاتی برقرار نشده است.")
         return
 
     cursor = connection.cursor()
-    query = """
+    query = f"""
     SELECT u.ID, u.user_login, u.user_pass, u.user_nicename, u.user_email, u.user_registered, m.meta_value
-    FROM wp_users u
-    LEFT JOIN wp_usermeta m ON u.ID = m.user_id AND m.meta_key = 'wp_capabilities'
+    FROM {table_prefix}users u
+    LEFT JOIN {table_prefix}usermeta m ON u.ID = m.user_id AND m.meta_key = '{table_prefix}capabilities'
     """
     try:
         cursor.execute(query)
@@ -36,7 +53,7 @@ def show_users(connection, tree):
         for row in rows:
             role = row[6]
             if role:
-                role = role.split('"')[1]  # استخراج نقش از داده‌های سریال شده
+                role = role.split('"')[1]
             else:
                 role = 'N/A'
             tree.insert("", "end", values=(row[0], row[1], row[2], row[3], row[4], row[5], role))
@@ -46,7 +63,7 @@ def show_users(connection, tree):
         cursor.close()
 
 # تابع برای ویرایش نقش کاربران
-def edit_user_role(connection, user_id, column, new_value, tree):
+def edit_user_role(connection, user_id, column, new_value, tree, table_prefix):
     if connection is None:
         messagebox.showerror("خطا", "اتصال به بانک اطلاعاتی برقرار نشده است.")
         return
@@ -55,18 +72,18 @@ def edit_user_role(connection, user_id, column, new_value, tree):
     try:
         if column == 'نقش':
             new_capabilities = f'a:1:{{s:{len(new_value)}:"{new_value}";b:1;}}'
-            cursor.execute("UPDATE wp_usermeta SET meta_value = %s WHERE user_id = %s AND meta_key = 'wp_capabilities'", (new_capabilities, user_id))
+            cursor.execute(f"UPDATE {table_prefix}usermeta SET meta_value = %s WHERE user_id = %s AND meta_key = '{table_prefix}capabilities'", (new_capabilities, user_id))
         else:
-            cursor.execute(f"UPDATE wp_users SET {column} = %s WHERE ID = %s", (new_value, user_id))
+            cursor.execute(f"UPDATE {table_prefix}users SET {column} = %s WHERE ID = %s", (new_value, user_id))
         connection.commit()
-        show_users(connection, tree)  # به‌روزرسانی لیست کاربران
+        show_users(connection, tree, table_prefix)  # به‌روزرسانی لیست کاربران
     except mysql.connector.Error as err:
         messagebox.showerror("خطا", f"خطا در به‌روزرسانی نقش کاربر: {err}")
     finally:
         cursor.close()
 
 # تابع برای ساخت اکانت جدید
-def create_new_user(connection, tree, role_combobox):
+def create_new_user(connection, tree, role_combobox, table_prefix):
     if connection is None:
         messagebox.showerror("خطا", "اتصال به بانک اطلاعاتی برقرار نشده است.")
         return
@@ -86,15 +103,15 @@ def create_new_user(connection, tree, role_combobox):
     cursor = connection.cursor()
     try:
         # ساخت کوئری برای درج کاربر جدید
-        query = "INSERT INTO wp_users (user_login, user_pass, user_nicename, user_email, user_registered) VALUES (%s, MD5(%s), %s, %s, NOW())"
+        query = f"INSERT INTO {table_prefix}users (user_login, user_pass, user_nicename, user_email, user_registered) VALUES (%s, MD5(%s), %s, %s, NOW())"
         cursor.execute(query, (username, password, nicename, email))
         user_id = cursor.lastrowid
         # درج نقش کاربر جدید
         new_capabilities = f'a:1:{{s:{len(role)}:"{role}";b:1;}}'
-        cursor.execute("INSERT INTO wp_usermeta (user_id, meta_key, meta_value) VALUES (%s, 'wp_capabilities', %s)", (user_id, new_capabilities))
+        cursor.execute(f"INSERT INTO {table_prefix}usermeta (user_id, meta_key, meta_value) VALUES (%s, '{table_prefix}capabilities', %s)", (user_id, new_capabilities))
         connection.commit()
         messagebox.showinfo("موفقیت", "کاربر جدید با موفقیت ایجاد شد")
-        show_users(connection, tree)  # به‌روزرسانی لیست کاربران
+        show_users(connection, tree, table_prefix)  # به‌روزرسانی لیست کاربران
     except mysql.connector.Error as err:
         messagebox.showerror("خطا", f"خطا در ساخت کاربر جدید: {err}")
     finally:
@@ -104,7 +121,8 @@ def create_new_user(connection, tree, role_combobox):
 def create_gui():
     def fetch_users():
         conn = get_db_connection(host_entry.get(), username_entry.get(), password_entry.get(), database_entry.get())
-        show_users(conn, user_tree)
+        table_prefix = get_table_prefix(conn)
+        show_users(conn, user_tree, table_prefix)
 
     def on_cell_double_click(event):
         item = user_tree.selection()[0]
@@ -116,7 +134,8 @@ def create_gui():
         new_value = simpledialog.askstring("ورودی", f"مقدار جدید برای {column_name} را وارد کنید:")
         if new_value is not None:
             conn = get_db_connection(host_entry.get(), username_entry.get(), password_entry.get(), database_entry.get())
-            edit_user_role(conn, user_id, column_name, new_value, user_tree)
+            table_prefix = get_table_prefix(conn)
+            edit_user_role(conn, user_id, column_name, new_value, user_tree, table_prefix)
 
     root = tk.Tk()
     root.title("مدیریت کاربران")
@@ -176,7 +195,7 @@ def create_gui():
     role_combobox.set("subscriber")
 
     # دکمه برای افزودن کاربر جدید
-    add_user_button = tk.Button(root, text="افزودن کاربر", command=lambda: create_new_user(get_db_connection(host_entry.get(), username_entry.get(), password_entry.get(), database_entry.get()), user_tree, role_combobox))
+    add_user_button = tk.Button(root, text="افزودن کاربر", command=lambda: create_new_user(get_db_connection(host_entry.get(), username_entry.get(), password_entry.get(), database_entry.get()), user_tree, role_combobox, get_table_prefix(get_db_connection(host_entry.get(), username_entry.get(), password_entry.get(), database_entry.get()))))
     add_user_button.grid(row=3, column=0, columnspan=2, padx=5, pady=5)
 
     root.mainloop()
